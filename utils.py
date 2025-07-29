@@ -10,17 +10,26 @@ def draw_text(frame, text_data):
     """
     Draws the extracted text on the video frame at the exact detection points.
     text_data: list of tuples (text, position, confidence)
+    Only displays high confidence text (>0.5)
     """
     logger.info(f"Drawing {len(text_data)} texts on frame at their detection points")
     
+    confidence_threshold = 0.5  # Only display high confidence text
+    displayed_count = 0
+    
     for text, position, confidence in text_data:
+        # Filter out low confidence detections
+        if confidence < confidence_threshold:
+            logger.info(f"Filtering out low confidence text: '{text}' (confidence: {confidence:.2f})")
+            continue
+            
         # Convert numpy types to regular Python integers for OpenCV compatibility
         x = int(position[0])
         y = int(position[1])
         
         logger.info(f"Drawing text: '{text}' at position ({x}, {y}) with confidence {confidence:.2f}")
         
-        # Draw a background rectangle for better text visibility
+        # Draw a rectangle around the text transparently
         text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)[0]
         cv2.rectangle(frame, (x, y - text_size[1] - 10), (x + text_size[0] + 10, y + 5), (0, 0, 0), 2)
         
@@ -40,6 +49,7 @@ def draw_text(frame, text_data):
         # cv2.rectangle(frame, (x, y), (x + text_size[0] + 10, y + text_size[1] + 10), color, 2)
         
         logger.info(f"Text drawn at position ({x}, {y}) with color {color}")
+        displayed_count += 1
     
-    logger.info("All texts drawn on frame at their detection points")
+    logger.info(f"Displayed {displayed_count} high-confidence texts on frame (threshold: {confidence_threshold})")
     return frame
