@@ -89,6 +89,10 @@ async def process_feed():
                             # Process each detected text through TextManager
                             for text, position, confidence in text_data:
                                 try:
+                                    # Log pixel coordinates for debugging
+                                    x, y = position
+                                    logger.info(f"Text detection: '{text}' at pixels ({x:.1f}, {y:.1f}) with confidence {confidence:.2f}")
+                                    
                                     # Filter by confidence threshold
                                     if confidence < CONFIDENCE_THRESHOLD:
                                         logger.info(f"Filtering low confidence text: '{text}' (confidence: {confidence:.2f})")
@@ -114,6 +118,10 @@ async def process_feed():
                         logger.info("Continuing with cached text data")
                 else:
                     logger.info(f"Using cached text data from previous OCR run")
+
+                # Periodic cleanup of old text detections (every 100 frames)
+                if frame_count % 100 == 0:
+                    text_manager.auto_cleanup_old_texts()
 
                 # Display accumulated text information
                 try:

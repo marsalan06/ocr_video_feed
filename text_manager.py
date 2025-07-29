@@ -23,10 +23,12 @@ class TextManager:
         self.frame_height = frame_height
         self.max_box_height = 0  # Track maximum height needed
         
-        # Duplicate detection
+        # Improved duplicate detection
         self.detected_texts = set()  # Set to track unique texts
         self.text_positions = {}  # Dictionary to track text positions
-        self.position_tolerance = 50  # Pixels tolerance for position matching
+        self.position_tolerance = 150  # Increased tolerance for position matching (from 100)
+        self.text_timestamps = {}  # Track when text was last detected
+        self.min_time_between_detections = 3.0  # Reduced minimum seconds between same text detection (from 5.0)
         
         # Initialize text storage
         self.setup_text_storage()
@@ -90,7 +92,7 @@ class TextManager:
     
     def expand_box_if_needed(self, required_height):
         """
-        Expand the bounding box if more height is needed.
+        Expand the bounding box if more height is needed, with a maximum limit.
         """
         if self.bounding_box is None:
             return
@@ -99,18 +101,31 @@ class TextManager:
         current_height = y2 - y1
         needed_height = required_height + (2 * self.margin)
         
+        # Set maximum box height to 70% of frame height (increased from 50%)
+        max_allowed_height = int(self.frame_height * 0.7)
+        
         if needed_height > current_height:
-            # Expand the box downward
-            new_y2 = min(y1 + needed_height, self.frame_height - self.margin)
-            self.bounding_box = (x1, y1, x2, new_y2)
-            self.max_box_height = new_y2 - y1
-            logger.info(f"Expanded bounding box height to {self.max_box_height}px")
+            # Expand the box downward, but respect maximum height
+            new_y2 = min(y1 + needed_height, y1 + max_allowed_height)
+            
+            # Don't expand beyond frame bounds
+            new_y2 = min(new_y2, self.frame_height - self.margin)
+            
+            if new_y2 > y2:  # Only expand if we actually need more space
+                self.bounding_box = (x1, y1, x2, new_y2)
+                self.max_box_height = new_y2 - y1
+                logger.info(f"Expanded bounding box height to {self.max_box_height}px (max allowed: {max_allowed_height}px)")
+            else:
+                logger.info(f"Box expansion not needed or limited by max height")
+        else:
+            logger.info(f"Box height sufficient: {current_height}px >= {needed_height}px needed")
     
     def is_duplicate_text(self, text, position):
         """
-        Check if text is a duplicate based on content and position.
+        Check if text is a duplicate based on content and position with improved logic.
         """
         text_key = text.strip().lower()
+        current_time = datetime.now().timestamp()
         
         # Check if we've seen this text before
         if text_key in self.detected_texts:
@@ -118,36 +133,53 @@ class TextManager:
             if text_key in self.text_positions:
                 prev_pos = self.text_positions[text_key]
                 distance = ((position[0] - prev_pos[0])**2 + (position[1] - prev_pos[1])**2)**0.5
-                if distance < self.position_tolerance:
-                    logger.info(f"Duplicate text detected: '{text}' at similar position")
+                
+                # Check time since last detection
+                last_detection_time = self.text_timestamps.get(text_key, 0)
+                time_since_last = current_time - last_detection_time
+                
+                # Less strict duplicate detection
+                if distance < self.position_tolerance and time_since_last < self.min_time_between_detections:
+                    logger.info(f"Duplicate text detected: '{text}' at pixels ({position[0]:.1f}, {position[1]:.1f}) - distance: {distance:.1f}px, time: {time_since_last:.1f}s")
                     return True
         
         return False
     
     def is_valid_text(self, text):
         """
-        Check if text is valid content (not UI elements or labels).
+        Check if text is valid content (not UI elements or labels) with improved filtering.
         """
         if not text or not text.strip():
             return False
         
-        # Filter out UI elements and labels
+        text_lower = text.strip().lower()
+        
+        # Filter out UI elements and labels (less aggressive)
         invalid_patterns = [
             'text box', 'box', 'bounding', 'frame', 'camera', 'ocr',
-            'text', 'box', 'px', 'pixels', 'width', 'height', 'dimensions'
+            'px', 'pixels', 'width', 'height', 'dimensions',
+            'extracted', 'saved', 'accumulated', 'chars',
+            'unique', 'confidence', 'position', 'coordinates', 'toxt', 'bov'
         ]
         
-        text_lower = text.strip().lower()
         for pattern in invalid_patterns:
             if pattern in text_lower:
+                logger.info(f"Filtered out UI/text: '{text}' (matched pattern: {pattern})")
                 return False
         
         # Filter out very short text (likely noise)
         if len(text.strip()) < 2:
+            logger.info(f"Filtered out short text: '{text}' (length: {len(text.strip())})")
             return False
         
         # Filter out text that's mostly numbers and symbols
         if len(text.strip()) <= 3 and not any(c.isalpha() for c in text):
+            logger.info(f"Filtered out numeric/symbol text: '{text}'")
+            return False
+        
+        # Filter out common OCR artifacts (less aggressive)
+        if any(char in text for char in ['_', '|', '\\', '/']):
+            logger.info(f"Filtered out text with artifacts: '{text}'")
             return False
         
         return True
@@ -163,10 +195,9 @@ class TextManager:
         
         # Validate text content
         if not self.is_valid_text(text):
-            logger.info(f"Filtered out invalid text: '{text}'")
             return None
         
-        # Check for duplicates
+        # Check for duplicates with improved logic
         if self.is_duplicate_text(text, original_position):
             return None
         
@@ -209,16 +240,24 @@ class TextManager:
                     text_x = max(0, min(text_x, frame_width - 1))
                     text_y = max(0, min(text_y, frame_height - 1))
             
+            # Check if accumulated text is getting too long (limit to 500 characters)
+            max_accumulated_length = 500
+            if len(self.accumulated_text) > max_accumulated_length:
+                logger.info(f"Accumulated text too long ({len(self.accumulated_text)} chars), clearing old text")
+                self.accumulated_text = ""
+                self.current_text_y = 0
+            
             # Add text to accumulated text
             if self.accumulated_text:
                 self.accumulated_text += " " + text.strip()
             else:
                 self.accumulated_text = text.strip()
             
-            # Track this text as detected
+            # Track this text as detected with timestamp
             text_key = text.strip().lower()
             self.detected_texts.add(text_key)
             self.text_positions[text_key] = original_position
+            self.text_timestamps[text_key] = datetime.now().timestamp()
             
             # Save text to file if enabled
             self.save_text_to_file(text.strip())
@@ -226,7 +265,7 @@ class TextManager:
             # Update position for next text
             self.current_text_y += self.text_height
             
-            logger.info(f"Added new text: '{text}' at position ({text_x}, {text_y}) in expanding box")
+            logger.info(f"Added new text: '{text}' at original pixels ({original_position[0]:.1f}, {original_position[1]:.1f}) -> display position ({text_x:.1f}, {text_y:.1f}) in expanding box")
             return (text_x, text_y), text.strip()
             
         except Exception as e:
@@ -258,6 +297,7 @@ class TextManager:
         self.current_text_y = 0
         self.detected_texts.clear()
         self.text_positions.clear()
+        self.text_timestamps.clear()  # Clear timestamps too
         
         # Reset box to initial size
         if self.frame_width and self.frame_height:
@@ -271,6 +311,26 @@ class TextManager:
                 logger.info("Text file cleared")
             except Exception as e:
                 logger.error(f"Error clearing text file: {e}")
+
+    def auto_cleanup_old_texts(self):
+        """
+        Automatically cleanup old text detections to prevent memory buildup.
+        """
+        current_time = datetime.now().timestamp()
+        cutoff_time = current_time - 30.0  # Remove texts older than 30 seconds
+        
+        texts_to_remove = []
+        for text_key, timestamp in self.text_timestamps.items():
+            if timestamp < cutoff_time:
+                texts_to_remove.append(text_key)
+        
+        for text_key in texts_to_remove:
+            self.detected_texts.discard(text_key)
+            self.text_positions.pop(text_key, None)
+            self.text_timestamps.pop(text_key, None)
+        
+        if texts_to_remove:
+            logger.info(f"Cleaned up {len(texts_to_remove)} old text detections")
 
     def draw_bounding_box(self, frame):
         """

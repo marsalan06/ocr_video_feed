@@ -99,6 +99,17 @@ class OCRProcessor:
                         logger.warning(f"Invalid bbox format for text '{text}', skipping")
                         continue
                     
+                    # Apply confidence threshold
+                    if confidence < 0.5:  # Lower threshold for better detection
+                        logger.info(f"Skipping low confidence text: '{text}' (confidence: {confidence:.2f})")
+                        continue
+                    
+                    # Filter out common OCR artifacts and UI elements
+                    text_clean = text.strip()
+                    if self._should_skip_text(text_clean):
+                        logger.info(f"Skipping filtered text: '{text_clean}'")
+                        continue
+                    
                     # Convert bbox to a more usable format
                     # bbox is a list of 4 points, we'll use the top-left point for text placement
                     top_left = bbox[0]  # [x, y] coordinates
@@ -123,8 +134,8 @@ class OCRProcessor:
                         x = max(0, min(x, width - 1))
                         y = max(0, min(y, height - 1))
                     
-                    extracted_data.append((text, (x, y), confidence))
-                    logger.info(f"Extracted: '{text}' at position ({x}, {y}) with confidence {confidence:.2f}")
+                    extracted_data.append((text_clean, (x, y), confidence))
+                    logger.info(f"Extracted: '{text_clean}' at pixels ({x:.1f}, {y:.1f}) with confidence {confidence:.2f}")
                     
                 except Exception as item_error:
                     logger.error(f"Error processing OCR result at index {i}: {item_error}")
@@ -136,3 +147,34 @@ class OCRProcessor:
         except Exception as e:
             logger.error(f"Unexpected error in extract_text: {e}")
             return []
+
+    def _should_skip_text(self, text):
+        """
+        Check if text should be skipped based on content filtering.
+        """
+        if not text or len(text) < 2:
+            return True
+        
+        text_lower = text.lower()
+        
+        # Skip common UI elements and labels (less aggressive)
+        skip_patterns = [
+            'text box', 'box', 'bounding', 'frame', 'camera', 'ocr',
+            'px', 'pixels', 'width', 'height', 'dimensions',
+            'extracted', 'saved', 'accumulated', 'chars',
+            'unique', 'confidence', 'position', 'coordinates', 'toxt', 'bov'
+        ]
+        
+        for pattern in skip_patterns:
+            if pattern in text_lower:
+                return True
+        
+        # Skip text with common OCR artifacts (less aggressive)
+        if any(char in text for char in ['_', '|', '\\', '/']):
+            return True
+        
+        # Skip very short text or mostly numeric text
+        if len(text) <= 1 or (len(text) <= 3 and not any(c.isalpha() for c in text)):
+            return True
+        
+        return False
