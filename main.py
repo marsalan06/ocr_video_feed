@@ -21,7 +21,7 @@ async def process_feed():
 
     frame_count = 0
     ocr_interval = 15  # Process OCR every 15 frames (about 2 times per second at 30fps)
-    last_texts = []  # Store last detected texts for stable display
+    last_text_data = []  # Store last detected text data for stable display
 
     while True:
         # Capture a frame from the video feed
@@ -36,17 +36,17 @@ async def process_feed():
         if frame_count % ocr_interval == 0:
             logger.info(f"Running OCR on frame {frame_count}")
             # Extract text from the frame using OCR
-            texts = ocr.extract_text(frame)
-            if texts:
-                last_texts = texts
-                logger.info(f"New texts detected: {texts}")
+            text_data = ocr.extract_text(frame)
+            if text_data:
+                last_text_data = text_data
+                logger.info(f"New text data detected: {len(text_data)} regions")
             else:
-                logger.info("No new texts detected")
+                logger.info("No new text data detected")
         else:
-            logger.info(f"Using cached texts from previous OCR run")
+            logger.info(f"Using cached text data from previous OCR run")
 
-        # Draw the extracted text on the frame (overlay on video feed)
-        draw_text(frame, last_texts)
+        # Draw the extracted text on the frame at exact detection points
+        draw_text(frame, last_text_data)
 
         # Display the live video feed with text overlay
         cv2.imshow("Live Text Extraction", frame)
@@ -65,5 +65,6 @@ if __name__ == "__main__":
     logger.info("Starting main application")
     logger.info("Following flow: Camera Feed → OCR → Text Analysis → Overlay Results")
     logger.info("Text updates slowed down: OCR runs every 15 frames for stability")
+    logger.info("Text will be overlaid at exact detection points with confidence-based colors")
     asyncio.run(process_feed())
     logger.info("Application finished")

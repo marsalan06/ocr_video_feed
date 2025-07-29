@@ -1,6 +1,7 @@
 import easyocr
 import cv2
 import logging
+import numpy as np
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -16,6 +17,7 @@ class OCRProcessor:
     def extract_text(self, frame):
         """
         Use EasyOCR to extract text from the given frame.
+        Returns list of tuples: (text, bbox, confidence)
         """
         logger.info("Starting text extraction from frame")
         
@@ -27,8 +29,21 @@ class OCRProcessor:
         results = self.reader.readtext(rgb)
         logger.info(f"OCR results: {results}")
         
-        # Extract only the text (filter out bounding boxes and confidences)
-        texts = [text for _, text, _ in results]
-        logger.info(f"Extracted texts: {texts}")
+        # Extract text, bounding box, and confidence
+        # results format: [(bbox, text, confidence), ...]
+        # bbox format: [[x1,y1], [x2,y1], [x2,y2], [x1,y2]]
+        extracted_data = []
+        for bbox, text, confidence in results:
+            # Convert bbox to a more usable format
+            # bbox is a list of 4 points, we'll use the top-left point for text placement
+            top_left = bbox[0]  # [x, y] coordinates
+            
+            # Convert numpy types to regular Python types for better compatibility
+            x = float(top_left[0]) if hasattr(top_left[0], 'item') else float(top_left[0])
+            y = float(top_left[1]) if hasattr(top_left[1], 'item') else float(top_left[1])
+            
+            extracted_data.append((text, (x, y), confidence))
+            logger.info(f"Extracted: '{text}' at position ({x}, {y}) with confidence {confidence:.2f}")
         
-        return texts
+        logger.info(f"Extracted {len(extracted_data)} text regions")
+        return extracted_data
