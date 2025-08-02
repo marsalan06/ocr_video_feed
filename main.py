@@ -86,6 +86,15 @@ async def process_feed():
                             last_text_data = text_data
                             logger.info(f"New text data detected: {len(text_data)} regions")
                             
+                            # Use frame comparison to determine if we should process this text
+                            should_process = text_manager.should_process_frame(frame, text_data)
+                            
+                            if should_process:
+                                logger.info("Processing text due to frame changes detected")
+                            else:
+                                logger.info("Skipping text processing - no significant changes detected")
+                                continue
+                            
                             # Process each detected text through TextManager
                             for text, position, confidence in text_data:
                                 try:
@@ -149,6 +158,14 @@ async def process_feed():
                             length_text = f"Text: {storage_info['accumulated_text_length']} chars, {storage_info['unique_texts_detected']} unique"
                             cv2.putText(frame, length_text, (10, frame.shape[0] - 80), 
                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, INFO_TEXT_COLOR, 1)
+                        
+                        # Display frame comparison info
+                        frame_info = text_manager.get_frame_comparison_info()
+                        if frame_info['enabled']:
+                            method = "SSIM" if frame_info['skimage_available'] else "MSE"
+                            frame_text = f"Frame comparison ({method}): {frame_info['stored_frames']}/{frame_info['max_stored_frames']} stored"
+                            cv2.putText(frame, frame_text, (10, frame.shape[0] - 100), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, INFO_TEXT_COLOR, 1)
                 except Exception as info_error:
                     logger.error(f"Failed to display text information: {info_error}")
 
@@ -201,10 +218,11 @@ async def process_feed():
 
 if __name__ == "__main__":
     try:
-        logger.info("Starting main application")
-        logger.info("Following flow: Camera Feed → OCR → Text Analysis → Single Dynamic Bounding Box")
-        logger.info(f"Text updates slowed down: OCR runs every {OCR_INTERVAL} frames for stability")
-        logger.info("Text will be placed in a single expanding bounding box with duplicate detection")
+        logger.info("Starting main application with Tesseract OCR")
+        logger.info("Following flow: Camera Feed → Tesseract OCR → Text Analysis → Single Dynamic Bounding Box")
+        logger.info(f"Text updates optimized: OCR runs every {OCR_INTERVAL} frames for Tesseract stability")
+        logger.info("Text will be placed in a single expanding bounding box with improved duplicate detection")
+        logger.info("Frame comparison enabled to avoid processing duplicate frames")
         logger.info("Press 'q' to quit, 'c' to clear accumulated text")
         logger.info(f"Text storage enabled: {SAVE_TEXT_TO_FILE}")
         if SAVE_TEXT_TO_FILE:

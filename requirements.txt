@@ -1,5 +1,6 @@
 opencv-python>=4.8.0
-easyocr>=1.7.0
-torch>=2.0.0
-transformers>=4.30.0
+pytesseract>=0.3.10
+Pillow>=9.0.0
+numpy>=1.21.0
+scikit-image>=0.19.0
 asyncio

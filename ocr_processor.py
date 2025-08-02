@@ -1,7 +1,9 @@
-import easyocr
 import cv2
 import logging
 import numpy as np
+import pytesseract
+from PIL import Image
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -9,35 +11,67 @@ logger = logging.getLogger(__name__)
 
 class OCRProcessor:
     def __init__(self):
-        logger.info("Initializing OCRProcessor")
-        self.reader = None
+        logger.info("Initializing OCRProcessor with Tesseract")
         self.initialization_successful = False
         
         try:
-            # Initialize EasyOCR with GPU if available
-            logger.info("Loading EasyOCR with GPU support...")
-            self.reader = easyocr.Reader(['en'], gpu=True)  # GPU enabled by default
-            logger.info("EasyOCR reader initialized with GPU support")
+            # Check if Tesseract is available
+            pytesseract.get_tesseract_version()
+            logger.info("Tesseract is available")
+            
+            # Configure Tesseract for better performance
+            self.tesseract_config = '--oem 3 --psm 6'
+            
+            # Initialize text tracking for duplicate prevention
+            self.previous_texts = set()
+            self.text_confidence_cache = {}
+            self.frame_count = 0
+            
             self.initialization_successful = True
+            logger.info("Tesseract OCR processor initialized successfully")
             
         except Exception as e:
-            logger.error(f"Failed to initialize EasyOCR: {e}")
-            logger.info("Attempting to initialize EasyOCR with CPU fallback...")
-            try:
-                self.reader = easyocr.Reader(['en'], gpu=False)
-                logger.info("EasyOCR reader initialized with CPU fallback")
-                self.initialization_successful = True
-            except Exception as cpu_error:
-                logger.error(f"Failed to initialize EasyOCR with CPU: {cpu_error}")
-                self.initialization_successful = False
+            logger.error(f"Failed to initialize Tesseract: {e}")
+            logger.error("Please install Tesseract: brew install tesseract (macOS) or apt-get install tesseract-ocr (Ubuntu)")
+            self.initialization_successful = False
 
     def is_initialized(self):
         """Check if OCR processor was initialized successfully"""
-        return self.initialization_successful and self.reader is not None
+        return self.initialization_successful
+
+    def preprocess_frame(self, frame):
+        """
+        Preprocess frame for better OCR results.
+        """
+        try:
+            # Convert to grayscale
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            
+            # Apply Gaussian blur to reduce noise
+            blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+            
+            # Apply adaptive thresholding for better text contrast
+            thresh = cv2.adaptiveThreshold(
+                blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+            )
+            
+            # Apply morphological operations to clean up text
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+            cleaned = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+            
+            # Apply slight dilation to make text more readable
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 1))
+            dilated = cv2.dilate(cleaned, kernel, iterations=1)
+            
+            return dilated
+            
+        except Exception as e:
+            logger.error(f"Error preprocessing frame: {e}")
+            return frame
 
     def extract_text(self, frame):
         """
-        Use EasyOCR to extract text from the given frame.
+        Use Tesseract to extract text from the given frame.
         Returns list of tuples: (text, position, confidence)
         """
         if not self.is_initialized():
@@ -49,7 +83,8 @@ class OCRProcessor:
             return []
         
         try:
-            logger.info("Starting text extraction from frame")
+            self.frame_count += 1
+            logger.info(f"Starting text extraction from frame {self.frame_count}")
             
             # Validate frame dimensions
             if len(frame.shape) != 3:
@@ -63,83 +98,73 @@ class OCRProcessor:
             
             logger.info(f"Processing frame with dimensions: {width}x{height}")
             
-            # Convert frame to RGB (OpenCV captures in BGR, but OCR needs RGB)
-            try:
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                logger.info("Converted frame to RGB for OCR processing")
-            except Exception as color_error:
-                logger.error(f"Failed to convert frame color space: {color_error}")
-                return []
+            # Preprocess frame for better OCR
+            processed_frame = self.preprocess_frame(frame)
             
-            # Run OCR on the frame
+            # Convert to PIL Image for Tesseract
+            pil_image = Image.fromarray(processed_frame)
+            
+            # Run Tesseract OCR with detailed output
             try:
-                results = self.reader.readtext(rgb)
-                logger.info(f"OCR results: {results}")
+                # Get detailed data including bounding boxes and confidence
+                data = pytesseract.image_to_data(
+                    pil_image, 
+                    config=self.tesseract_config,
+                    output_type=pytesseract.Output.DICT
+                )
+                logger.info(f"Tesseract processed frame successfully")
             except Exception as ocr_error:
-                logger.error(f"OCR processing failed: {ocr_error}")
+                logger.error(f"Tesseract OCR processing failed: {ocr_error}")
                 return []
             
-            # Extract text, bounding box, and confidence
-            # results format: [(bbox, text, confidence), ...]
-            # bbox format: [[x1,y1], [x2,y1], [x2,y2], [x1,y2]]
+            # Extract and filter text results
             extracted_data = []
             
-            for i, (bbox, text, confidence) in enumerate(results):
+            for i in range(len(data['text'])):
                 try:
-                    # Validate OCR result
-                    if not isinstance(text, str) or not text.strip():
-                        logger.warning(f"Skipping empty or invalid text at index {i}")
+                    text = data['text'][i].strip()
+                    confidence = float(data['conf'][i])
+                    
+                    # Skip empty text or very low confidence
+                    if not text or confidence < 30:  # Tesseract confidence is 0-100
                         continue
                     
-                    if not isinstance(confidence, (int, float)) or confidence < 0 or confidence > 1:
-                        logger.warning(f"Invalid confidence value {confidence} for text '{text}', skipping")
-                        continue
+                    # Get bounding box coordinates
+                    x = data['left'][i]
+                    y = data['top'][i]
+                    w = data['width'][i]
+                    h = data['height'][i]
                     
-                    if not isinstance(bbox, list) or len(bbox) != 4:
-                        logger.warning(f"Invalid bbox format for text '{text}', skipping")
-                        continue
-                    
-                    # Apply confidence threshold
-                    if confidence < 0.5:  # Lower threshold for better detection
-                        logger.info(f"Skipping low confidence text: '{text}' (confidence: {confidence:.2f})")
-                        continue
-                    
-                    # Filter out common OCR artifacts and UI elements
-                    text_clean = text.strip()
-                    if self._should_skip_text(text_clean):
-                        logger.info(f"Skipping filtered text: '{text_clean}'")
-                        continue
-                    
-                    # Convert bbox to a more usable format
-                    # bbox is a list of 4 points, we'll use the top-left point for text placement
-                    top_left = bbox[0]  # [x, y] coordinates
+                    # Calculate center point for text placement
+                    center_x = x + w // 2
+                    center_y = y + h // 2
                     
                     # Validate coordinates
-                    if not isinstance(top_left, list) or len(top_left) != 2:
-                        logger.warning(f"Invalid top_left coordinates for text '{text}', skipping")
-                        continue
-                    
-                    # Convert numpy types to regular Python types for better compatibility
-                    try:
-                        x = float(top_left[0]) if hasattr(top_left[0], 'item') else float(top_left[0])
-                        y = float(top_left[1]) if hasattr(top_left[1], 'item') else float(top_left[1])
-                    except (ValueError, TypeError) as coord_error:
-                        logger.warning(f"Failed to convert coordinates for text '{text}': {coord_error}")
-                        continue
-                    
-                    # Validate coordinate ranges
                     if x < 0 or y < 0 or x >= width or y >= height:
-                        logger.warning(f"Coordinates ({x}, {y}) out of frame bounds ({width}x{height}) for text '{text}'")
-                        # Clamp coordinates to frame bounds
-                        x = max(0, min(x, width - 1))
-                        y = max(0, min(y, height - 1))
+                        continue
                     
-                    extracted_data.append((text_clean, (x, y), confidence))
-                    logger.info(f"Extracted: '{text_clean}' at pixels ({x:.1f}, {y:.1f}) with confidence {confidence:.2f}")
+                    # Filter text content
+                    if self._should_skip_text(text):
+                        logger.info(f"Skipping filtered text: '{text}' (confidence: {confidence:.1f})")
+                        continue
+                    
+                    # Check for duplicates with improved logic
+                    if self._is_duplicate_detection(text, (center_x, center_y)):
+                        logger.info(f"Skipping duplicate text: '{text}' at ({center_x}, {center_y})")
+                        continue
+                    
+                    # Convert confidence to 0-1 scale for consistency
+                    normalized_confidence = confidence / 100.0
+                    
+                    extracted_data.append((text, (center_x, center_y), normalized_confidence))
+                    logger.info(f"Extracted: '{text}' at pixels ({center_x}, {center_y}) with confidence {normalized_confidence:.2f}")
                     
                 except Exception as item_error:
                     logger.error(f"Error processing OCR result at index {i}: {item_error}")
                     continue
+            
+            # Update text tracking
+            self._update_text_tracking(extracted_data)
             
             logger.info(f"Successfully extracted {len(extracted_data)} text regions")
             return extracted_data
@@ -157,20 +182,21 @@ class OCRProcessor:
         
         text_lower = text.lower()
         
-        # Skip common UI elements and labels (less aggressive)
+        # Skip common UI elements and labels
         skip_patterns = [
             'text box', 'box', 'bounding', 'frame', 'camera', 'ocr',
             'px', 'pixels', 'width', 'height', 'dimensions',
             'extracted', 'saved', 'accumulated', 'chars',
-            'unique', 'confidence', 'position', 'coordinates', 'toxt', 'bov'
+            'unique', 'confidence', 'position', 'coordinates'
         ]
         
         for pattern in skip_patterns:
             if pattern in text_lower:
                 return True
         
-        # Skip text with common OCR artifacts (less aggressive)
-        if any(char in text for char in ['_', '|', '\\', '/']):
+        # Skip text with excessive special characters
+        special_char_ratio = sum(1 for c in text if not c.isalnum() and not c.isspace()) / len(text)
+        if special_char_ratio > 0.5:
             return True
         
         # Skip very short text or mostly numeric text
@@ -178,3 +204,52 @@ class OCRProcessor:
             return True
         
         return False
+
+    def _is_duplicate_detection(self, text, position):
+        """
+        Check if text is a duplicate based on content and position.
+        """
+        text_key = text.strip().lower()
+        
+        # Check if we've seen this text recently
+        if text_key in self.previous_texts:
+            # Check if position is close to previous detection
+            if text_key in self.text_confidence_cache:
+                prev_pos = self.text_confidence_cache[text_key]['position']
+                distance = ((position[0] - prev_pos[0])**2 + (position[1] - prev_pos[1])**2)**0.5
+                
+                # If text is detected close to previous position, it's likely a duplicate
+                if distance < 100:  # 100 pixel tolerance
+                    return True
+        
+        return False
+
+    def _update_text_tracking(self, extracted_data):
+        """
+        Update text tracking for duplicate prevention.
+        """
+        current_texts = set()
+        
+        for text, position, confidence in extracted_data:
+            text_key = text.strip().lower()
+            current_texts.add(text_key)
+            
+            # Update confidence cache
+            if text_key not in self.text_confidence_cache or confidence > self.text_confidence_cache[text_key]['confidence']:
+                self.text_confidence_cache[text_key] = {
+                    'position': position,
+                    'confidence': confidence,
+                    'frame_count': self.frame_count
+                }
+        
+        # Clean up old entries (older than 30 frames)
+        cutoff_frame = self.frame_count - 30
+        keys_to_remove = []
+        for text_key, data in self.text_confidence_cache.items():
+            if data['frame_count'] < cutoff_frame:
+                keys_to_remove.append(text_key)
+        
+        for key in keys_to_remove:
+            self.text_confidence_cache.pop(key, None)
+        
+        self.previous_texts = current_texts
