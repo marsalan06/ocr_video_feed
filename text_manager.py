@@ -173,6 +173,7 @@ class TextManager:
     def is_valid_text(self, text):
         """
         Check if text is valid content (not UI elements or labels) with improved filtering.
+        Less aggressive to preserve semantic content.
         """
         if not text or not text.strip():
             return False
@@ -181,10 +182,10 @@ class TextManager:
         
         # Filter out UI elements and labels (less aggressive)
         invalid_patterns = [
-            'text box', 'box', 'bounding', 'frame', 'camera', 'ocr',
+            'text box', 'bounding box', 'frame', 'camera', 'ocr',
             'px', 'pixels', 'width', 'height', 'dimensions',
             'extracted', 'saved', 'accumulated', 'chars',
-            'unique', 'confidence', 'position', 'coordinates', 'toxt', 'bov'
+            'unique', 'confidence', 'position', 'coordinates'
         ]
         
         for pattern in invalid_patterns:
@@ -192,19 +193,24 @@ class TextManager:
                 logger.info(f"Filtered out UI/text: '{text}' (matched pattern: {pattern})")
                 return False
         
-        # Filter out very short text (likely noise)
+        # Filter out very short text (less aggressive)
         if len(text.strip()) < 2:
             logger.info(f"Filtered out short text: '{text}' (length: {len(text.strip())})")
             return False
         
-        # Filter out text that's mostly numbers and symbols
-        if len(text.strip()) <= 3 and not any(c.isalpha() for c in text):
+        # Filter out text that's mostly numbers and symbols (less aggressive)
+        if len(text.strip()) <= 2 and not any(c.isalpha() for c in text):
             logger.info(f"Filtered out numeric/symbol text: '{text}'")
             return False
         
+        # Filter out text that's just punctuation or symbols
+        if all(not c.isalnum() for c in text):
+            logger.info(f"Filtered out symbol-only text: '{text}'")
+            return False
+        
         # Filter out common OCR artifacts (less aggressive)
-        if any(char in text for char in ['_', '|', '\\', '/']):
-            logger.info(f"Filtered out text with artifacts: '{text}'")
+        if len(text.strip()) <= 3 and any(char in text for char in ['_', '|', '\\', '/']):
+            logger.info(f"Filtered out short text with artifacts: '{text}'")
             return False
         
         return True
@@ -212,6 +218,7 @@ class TextManager:
     def add_text(self, text, original_position, frame):
         """
         Adds text to the single bounding box, expanding it if needed.
+        Improved to handle coherent text blocks better.
         Returns (position, text) tuple for display, or None if duplicate/no space available.
         """
         if not text or not text.strip():
@@ -270,16 +277,22 @@ class TextManager:
                     text_x = max(0, min(text_x, frame_width - 1))
                     text_y = max(0, min(text_y, frame_height - 1))
 
-            # Check if accumulated text is getting too long (limit to 500 characters)
-            max_accumulated_length = 500
+            # Check if accumulated text is getting too long (increased limit for coherent text)
+            max_accumulated_length = 1000  # Increased from 500 to accommodate longer coherent text
             if len(self.accumulated_text) > max_accumulated_length:
                 logger.info(f"Accumulated text too long ({len(self.accumulated_text)} chars), clearing old text")
                 self.accumulated_text = ""
                 self.current_text_y = 0
 
-            # Add text to accumulated text
+            # Add text to accumulated text with better formatting for coherent blocks
             if self.accumulated_text:
-                self.accumulated_text += " " + text.strip()
+                # Check if the new text looks like it should be on a new line
+                if len(text.strip()) > 20 or text.strip().endswith('.') or text.strip().endswith('!'):
+                    # Add newline for longer text or sentences
+                    self.accumulated_text += "\n" + text.strip()
+                else:
+                    # Add space for shorter text
+                    self.accumulated_text += " " + text.strip()
             else:
                 self.accumulated_text = text.strip()
 
@@ -323,6 +336,38 @@ class TextManager:
         Returns the currently accumulated text in sequence.
         """
         return self.accumulated_text
+
+    def get_formatted_text_for_display(self):
+        """
+        Returns formatted text for display with proper line breaks.
+        """
+        if not self.accumulated_text:
+            return ""
+        
+        # Split by newlines and format for display
+        lines = self.accumulated_text.split('\n')
+        formatted_lines = []
+        
+        for line in lines:
+            if line.strip():
+                # Wrap long lines for better display
+                if len(line) > 60:
+                    # Simple word wrapping
+                    words = line.split()
+                    current_line = ""
+                    for word in words:
+                        if len(current_line + " " + word) <= 60:
+                            current_line += (" " + word) if current_line else word
+                        else:
+                            if current_line:
+                                formatted_lines.append(current_line)
+                            current_line = word
+                    if current_line:
+                        formatted_lines.append(current_line)
+                else:
+                    formatted_lines.append(line)
+        
+        return '\n'.join(formatted_lines)
 
     def clear_text(self):
         """

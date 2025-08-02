@@ -141,6 +141,17 @@ async def process_feed():
                         cv2.putText(frame, info_text, (10, frame.shape[0] - 20), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, INFO_TEXT_COLOR, 2)
                         
+                        # Display formatted text in the bounding box if available
+                        formatted_text = text_manager.get_formatted_text_for_display()
+                        if formatted_text:
+                            # Display formatted text in the bounding box
+                            lines = formatted_text.split('\n')
+                            for i, line in enumerate(lines[:5]):  # Show up to 5 lines
+                                if line.strip():
+                                    y_offset = frame.shape[0] - 40 - (i * 25)
+                                    cv2.putText(frame, line[:80], (10, y_offset), 
+                                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, INFO_TEXT_COLOR, 1)
+                        
                         # Display box info
                         box_info = text_manager.get_box_info()
                         box_text = f"Box: {box_info['box_width']}x{box_info['box_height']}px"
